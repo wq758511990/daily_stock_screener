@@ -1,0 +1,10 @@
+akshare
+yfinance
+pandas
+numpy
+loguru
+tqdm
+backtrader
+ta
+requests
+lxml

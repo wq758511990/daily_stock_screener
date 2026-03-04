@@ -1,0 +1,22 @@
+# 虚拟环境
+venv/
+.env
+.venv
+env/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 策略数据缓存 (包含历史K线，体积巨大，不建议入库)
+src/daily_stock_screener/cache/
+*.pkl
+
+# 生成的报告
+Quant_Report_*.md
+
+# 系统文件
+.DS_Store
+.idea/
+.vscode/

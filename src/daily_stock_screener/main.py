@@ -1,0 +1,153 @@
+from data_layer import DataLayer
+from strategy_engine import StrategyEngine
+from backtest_engine import CompetitiveBacktest
+from report_generator import ReportGenerator
+from email_service import EmailService
+from loguru import logger
+import pandas as pd
+from tqdm import tqdm
+import argparse
+import sys
+
+class ScreenerApp:
+    def __init__(self, market='A', real_trade=False):
+        self.market = market
+        self.real_trade = real_trade
+        self.data_layer = DataLayer()
+        self.strategy_engine = StrategyEngine()
+        
+        if self.real_trade:
+            self.pool_size = 300 if self.market == 'A' else 500
+            logger.info(f"--- 实盘模式启动: 分析 {self.pool_size} 支股票 ---")
+        else:
+            self.pool_size = 10 
+            logger.info(f"--- 测试模式启动: 仅分析前 {self.pool_size} 支股票 ---")
+
+    def run(self):
+        # 0. 清理缓存，确保拉取到最新的 500 天数据 (因修改了days=500，必须清理旧缓存)
+        logger.info("清理历史缓存数据以适配 500 天特征预热机制...")
+        # 暴力清理所有缓存，让它重新抓取完整的 500 天序列
+        self.data_layer.cache.clean_old_cache(days=0) 
+
+        logger.info("="*60)
+        logger.info(f"开启 {self.market} 股市场『纯量价实盘安全版』选股与研报生成系统")
+        logger.info("="*60)
+
+        # 1. 大盘择时判断
+        logger.info(f"正在分析 {self.market} 股大盘趋势 (择时系统)...")
+        index_df = self.data_layer.get_index_history(self.market)
+        market_status = "BULL" 
+        if not index_df.empty and len(index_df) >= 200:
+            index_sma200 = index_df['close'].rolling(200).mean().iloc[-1]
+            current_index = index_df['close'].iloc[-1]
+            if current_index < index_sma200:
+                market_status = "BEAR"
+                logger.warning(f"⚠️ 大盘处于空头排列 (当前指数 {current_index:.2f} < 200日均线 {index_sma200:.2f})，建议控制仓位！")
+            else:
+                logger.info(f"✅ 大盘处于多头排列 (当前指数 {current_index:.2f} > 200日均线 {index_sma200:.2f})，选股策略胜率提升。")
+        
+        # 2. 获取名单
+        if self.market == 'A':
+            full_pool = self.data_layer.get_hs300_list()
+        else:
+            full_pool = self.data_layer.get_sp500_list()
+        
+        if full_pool.empty:
+            logger.error("无法获取股票名单")
+            return
+
+        # 3. 准备数据与精细校验
+        test_pool = full_pool.head(self.pool_size)
+        data_dict = {}
+        financial_dict = {} # 仅用于最后报告排雷展示
+        
+        logger.info(f"正在深度抓取数据并执行向量化计算 (抽样 {len(test_pool)} 支，获取500天数据以预热指标)...")
+        for _, row in tqdm(test_pool.iterrows(), total=len(test_pool)):
+            symbol = row['symbol']
+            if self.market == 'A':
+                # 拉取 500 天，前 252 天给长周期均线预热，后 248 天参与真实回测
+                history = self.data_layer.get_a_stock_history(symbol, days=500)
+                financial = self.data_layer.get_a_financial_factors(symbol)
+            else:
+                history = self.data_layer.get_us_stock_history(symbol, days=500)
+                financial = self.data_layer.get_us_financial_factors(symbol)
+            
+            is_valid, reason = self.data_layer.validate_data(history, financial)
+            if is_valid and len(history) >= 252:
+                data_dict[symbol] = history
+                financial_dict[symbol] = financial
+
+        logger.info(f"成功获取有效数据：{len(data_dict)} 支股票进入量化竞赛。")
+
+        # 4. 初始化回测竞争器 (彻底剥离基本面数据，仅依据技术面计算历史收益)
+        competitor = CompetitiveBacktest(data_dict)
+
+        # 5. 对所有策略生成评分与精选池
+        all_recommendations = {}
+        
+        logger.info("正在执行纯量价技术面打分引擎 (已彻底剔除未来函数)...")
+
+        for strat_name in competitor.strategies_list:
+            rec_list = []
+            for symbol, history in data_dict.items():
+                financial = financial_dict[symbol]
+                name = test_pool[test_pool['symbol'] == symbol]['name'].iloc[0]
+                
+                # 直接获取向量化算好的最后一行作为最新状态
+                last_row = history.iloc[-1].to_dict()
+                score = self.strategy_engine.get_score(strat_name, last_row)
+                price = last_row.get('close', 0)
+                
+                rec_list.append({
+                    'symbol': symbol, 
+                    'name': name, 
+                    'score': score, 
+                    'price': price,
+                    'pe': financial.get('pe', 'N/A'),
+                    'pb': financial.get('pb', 'N/A'),
+                    'roe': financial.get('roe', 'N/A')
+                })
+            
+            # 按得分排序
+            if rec_list:
+                df_rec = pd.DataFrame(rec_list).sort_values(by='score', ascending=False)
+                all_recommendations[strat_name] = df_rec.to_dict('records')
+            else:
+                all_recommendations[strat_name] = []
+
+        # 6. 执行策略回测竞赛
+        logger.info("正在执行 5 大量化模型的回测竞赛...")
+        best_name, results_dict = competitor.find_best_strategy()
+        
+        logger.info(f"竞赛结束，当前胜率最高策略为: 【{best_name}】")
+
+        if not any(all_recommendations.values()):
+            logger.warning("本次运行未获取到足够的有效数据，无法生成完整建议清单。")
+
+        # 7. 生成专业级 Markdown 报告
+        logger.info("正在生成选股研究报告...")
+        report = ReportGenerator(self.market)
+        report.add_header(market_status=market_status)
+        report.add_competition_results(best_name, results_dict)
+        report.add_top_recommendations(best_name, all_recommendations[best_name])
+        
+        other_recs = {k: v for k, v in all_recommendations.items() if k != best_name}
+        report.add_other_strategies(other_recs)
+        
+        report.save_report()
+
+        # 8. 发送邮件
+        logger.info("正在发送研报邮件...")
+        email_service = EmailService()
+        subject = f"【实盘安全量化研报】{self.market}股市场 - {report.date_str}"
+        content = "\n".join(report.content)
+        email_service.send_report(subject, content)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="纯技术面量化选股与研报生成系统")
+    parser.add_argument('--market', type=str, default='A', choices=['A', 'US'], help='选择分析市场: A 或 US')
+    parser.add_argument('--real-trade', action='store_true', help='实盘模式：A股分析300支，美股分析500支全量数据')
+    args = parser.parse_args()
+    
+    app = ScreenerApp(market=args.market, real_trade=args.real_trade)
+    app.run()
