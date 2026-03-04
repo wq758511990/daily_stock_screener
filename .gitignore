@@ -20,3 +20,6 @@ Quant_Report_*.md
 .DS_Store
 .idea/
 .vscode/
+
+# logs
+*.log
