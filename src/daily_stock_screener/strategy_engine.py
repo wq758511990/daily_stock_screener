@@ -32,7 +32,7 @@ class ValueReversalStrategy:
             
         return score_rev * 0.6 + score_rsi * 0.4
 
-class DividendStrategy:
+class LowVolStrategy:
     """低波稳健 (原红利贵族) - 纯技术面: 极低波动率、均线上方"""
     def score(self, row):
         vol = row.get('volatility_20d', 1.0)
@@ -86,7 +86,7 @@ class StrategyEngine:
         self.strategies = {
             'Quality_Growth': QualityGrowthStrategy(),
             'Value_Reversal': ValueReversalStrategy(),
-            'Dividend_Yield': DividendStrategy(),
+            'Low_Volatility_Trend': LowVolStrategy(),
             'Multi_Factor_Alpha': MultiFactorAlphaStrategy(),
             'Momentum_Breakout': MomentumBreakoutStrategy()
         }

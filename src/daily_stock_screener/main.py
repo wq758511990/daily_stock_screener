@@ -20,31 +20,36 @@ class ScreenerApp:
             self.pool_size = 300 if self.market == 'A' else 500
             logger.info(f"--- 实盘模式启动: 分析 {self.pool_size} 支股票 ---")
         else:
-            self.pool_size = 10 
-            logger.info(f"--- 测试模式启动: 仅分析前 {self.pool_size} 支股票 ---")
+            self.pool_size = 50 
+            logger.info(f"--- 测试模式启动: 分析前 {self.pool_size} 支股票以确保回测有效性 ---")
 
     def run(self):
-        # 0. 清理缓存，确保拉取到最新的 500 天数据 (因修改了days=500，必须清理旧缓存)
-        logger.info("清理历史缓存数据以适配 500 天特征预热机制...")
-        # 暴力清理所有缓存，让它重新抓取完整的 500 天序列
-        self.data_layer.cache.clean_old_cache(days=0) 
+        # 0. 清理缓存，保留当日数据，清理更旧的
+        logger.info("清理过往缓存数据...")
+        self.data_layer.cache.clean_old_cache(days=1) 
 
         logger.info("="*60)
         logger.info(f"开启 {self.market} 股市场『纯量价实盘安全版』选股与研报生成系统")
         logger.info("="*60)
 
-        # 1. 大盘择时判断
+        # 1. 大盘择时判断与特征提取
         logger.info(f"正在分析 {self.market} 股大盘趋势 (择时系统)...")
-        index_df = self.data_layer.get_index_history(self.market)
+        index_df = self.data_layer.get_index_history(self.market, days=1260) 
         market_status = "BULL" 
+        market_trend_series = None
         if not index_df.empty and len(index_df) >= 200:
-            index_sma200 = index_df['close'].rolling(200).mean().iloc[-1]
+            index_df['sma_200'] = index_df['close'].rolling(200).mean()
+            # 提取大盘每日牛熊信号
+            index_df['market_bull'] = (index_df['close'] > index_df['sma_200']).astype(int)
+            market_trend_series = index_df[['market_bull']]
+            
             current_index = index_df['close'].iloc[-1]
+            index_sma200 = index_df['sma_200'].iloc[-1]
             if current_index < index_sma200:
                 market_status = "BEAR"
-                logger.warning(f"⚠️ 大盘处于空头排列 (当前指数 {current_index:.2f} < 200日均线 {index_sma200:.2f})，建议控制仓位！")
+                logger.warning(f"⚠️ 大盘处于空头排列 (当前指数 {current_index:.2f} < 200日均线 {index_sma200:.2f})，系统将启动 20% 轻仓防守机制！")
             else:
-                logger.info(f"✅ 大盘处于多头排列 (当前指数 {current_index:.2f} > 200日均线 {index_sma200:.2f})，选股策略胜率提升。")
+                logger.info(f"✅ 大盘处于多头排列 (当前指数 {current_index:.2f} > 200日均线 {index_sma200:.2f})，系统保持满仓轮动。")
         
         # 2. 获取名单
         if self.market == 'A':
@@ -59,13 +64,12 @@ class ScreenerApp:
         # 3. 准备数据与精细校验
         test_pool = full_pool.head(self.pool_size)
         data_dict = {}
-        financial_dict = {} # 仅用于最后报告排雷展示
+        financial_dict = {} 
         
-        logger.info(f"正在深度抓取数据并执行向量化计算 (抽样 {len(test_pool)} 支，获取500天数据以预热指标)...")
+        logger.info(f"正在深度抓取数据并执行向量化计算 (样本 {len(test_pool)} 支)...")
         for _, row in tqdm(test_pool.iterrows(), total=len(test_pool)):
             symbol = row['symbol']
             if self.market == 'A':
-                # 拉取 500 天，前 252 天给长周期均线预热，后 248 天参与真实回测
                 history = self.data_layer.get_a_stock_history(symbol, days=500)
                 financial = self.data_layer.get_a_financial_factors(symbol)
             else:
@@ -73,14 +77,21 @@ class ScreenerApp:
                 financial = self.data_layer.get_us_financial_factors(symbol)
             
             is_valid, reason = self.data_layer.validate_data(history, financial)
-            if is_valid and len(history) >= 252:
+            if is_valid:
+                # 注入大盘择时信号
+                if market_trend_series is not None:
+                    history = history.join(market_trend_series, how='left')
+                    history['market_bull'] = history['market_bull'].fillna(0)
+                else:
+                    history['market_bull'] = 1 
+                
                 data_dict[symbol] = history
                 financial_dict[symbol] = financial
 
         logger.info(f"成功获取有效数据：{len(data_dict)} 支股票进入量化竞赛。")
 
-        # 4. 初始化回测竞争器 (彻底剥离基本面数据，仅依据技术面计算历史收益)
-        competitor = CompetitiveBacktest(data_dict)
+        # 4. 初始化回测竞争器 (传入市场参数以适配佣金)
+        competitor = CompetitiveBacktest(data_dict, market=self.market)
 
         # 5. 对所有策略生成评分与精选池
         all_recommendations = {}

@@ -61,10 +61,10 @@ class DataLayer:
         # 3. 波动率 (20日年化波动)
         df['volatility_20d'] = df['close'].pct_change().rolling(20).std() * np.sqrt(252)
         
-        # 4. RSI_14
+        # 4. RSI_14 (使用传统看盘软件标准的指数移动平均 RMA)
         delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
         rs = gain / loss
         df['rsi_14'] = 100 - (100 / (1 + rs))
         
@@ -179,8 +179,8 @@ class DataLayer:
         except Exception:
             return {'pe': 'N/A', 'pb': 'N/A', 'roe': 'N/A', 'sector': 'US'}
 
-    def get_index_history(self, market='A', days=365):
-        """获取市场基准指数（A股: 沪深300, US: 标普500）"""
+    def get_index_history(self, market='A', days=1260):
+        """获取市场基准指数（A股: 沪深300, US: 标普500），默认取5年以增强择时稳健性"""
         try:
             if market == 'A':
                 df = ak.stock_zh_index_daily_em(symbol="sh000300")
@@ -189,7 +189,8 @@ class DataLayer:
                 df.set_index('date', inplace=True)
             else:
                 ticker = yf.Ticker("^GSPC")
-                df = ticker.history(period=f"{days}d")
+                # 使用 period="5y" 替代固定天数
+                df = ticker.history(period="5y")
                 df.columns = [c.lower() for c in df.columns]
             
             return df.tail(days)
@@ -198,11 +199,16 @@ class DataLayer:
             return pd.DataFrame()
 
     def validate_data(self, df, financial):
-        """实盘数据校验：由于剔除基本面打分，这里主要检查流动性"""
-        if df.empty or len(df) < 200:
-            return False, "数据长度不足"
+        """实盘数据校验：包含流动性校验与基本面初步排雷"""
+        if df.empty or len(df) < 252:
+            return False, "历史数据不足1年"
         
-        if df['volume'].tail(3).mean() <= 0:
+        if df['volume'].tail(5).mean() <= 0:
             return False, "流动性异常(停牌或无成交)"
+
+        # 核心排雷：剔除亏损公司 (PE <= 0)
+        pe = financial.get('pe')
+        if isinstance(pe, (int, float)) and pe <= 0:
+            return False, f"基本面风险 (PE: {pe:.2f})"
             
         return True, "OK"

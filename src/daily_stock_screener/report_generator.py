@@ -27,8 +27,8 @@ class ReportGenerator:
 
     def add_competition_results(self, best_name, results_dict):
         self.content.append("## 🏆 一、 纯量价回测锦标赛 (过去1年实盘防穿越模拟)")
-        self.content.append("> **架构进化**: 为杜绝“未来函数”数据穿越，本系统已**完全剔除基本面参数**参与打分。锦标赛完全基于当日的**纯量价技术面**展开竞争，反映真实的盘面情绪与盈亏比。")
-        self.content.append("系统加入了 **0.1% 滑点**与**双边万三佣金**，通过综合评分（收益+夏普+卡玛）选出当前最强策略。")
+        self.content.append("> **架构说明**: 锦标赛完全基于**纯量价技术面**展开竞争，已加入 **0.1% 滑点**与真实佣金（A股含卖出印花税）。通过收益+夏普综合排名选出当前最强策略，用于驱动今日选股。")
+        self.content.append("> ⚠️ **数据局限声明**: 本回测基于**当前指数成分股**历史数据，不含回测期内已被剔除或退市的个股，存在**幸存者偏差**，回测收益系统性偏高。此处数据仅用于五种策略逻辑的**横向相对比较**，不代表未来可获得的真实收益，请勿据此推算预期回报。")
         
         self.content.append("\n| 策略名称 | 核心逻辑 | 年化收益 | 最大回撤 | 夏普比率 | 综合排位 |")
         self.content.append("| :--- | :--- | :---: | :---: | :---: | :---: |")
@@ -42,7 +42,7 @@ class ReportGenerator:
         logic_map = {
             'Quality_Growth': '长牛趋势: 极高动量+极低波动',
             'Value_Reversal': '超跌反转: 均线负乖离+RSI超卖',
-            'Dividend_Yield': '低波稳健: 极低波动+均线多头',
+            'Low_Volatility_Trend': '低波稳健: 极低波动+均线多头',
             'Multi_Factor_Alpha': '均衡量价: 动量与波动均衡配置',
             'Momentum_Breakout': '动量突破: 逼近52周新高+放量'
         }
