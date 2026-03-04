@@ -141,7 +141,7 @@ class CompetitiveBacktest:
         strat = results[0]
         final_value = cerebro.broker.getvalue()
         total_return = (final_value - self.initial_cash) / self.initial_cash
-        dd = strat.analyzers.drawdown.get_analysis()['max']['drawdown'] / 100.0
+        dd = strat.analyzers.drawdown.get_analysis().get('max', {}).get('drawdown', 0.0) / 100.0
         sharpe = strat.analyzers.sharpe.get_analysis().get('sharperatio', 0.0) or 0.0
         return total_return, dd, sharpe
 
