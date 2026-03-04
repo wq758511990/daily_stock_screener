@@ -36,8 +36,7 @@ class ReportGenerator:
         df_res = pd.DataFrame(results_dict).T
         df_res['ret_rank'] = df_res['return'].rank(pct=True)
         df_res['sharpe_rank'] = df_res['sharpe'].rank(pct=True)
-        df_res['calmar_rank'] = df_res['calmar'].rank(pct=True)
-        df_res['composite_score'] = df_res['ret_rank'] * 0.4 + df_res['sharpe_rank'] * 0.3 + df_res['calmar_rank'] * 0.3
+        df_res['composite_score'] = df_res['ret_rank'] * 0.4 + df_res['sharpe_rank'] * 0.6
         
         logic_map = {
             'Quality_Growth': '长牛趋势: 极高动量+极低波动',
