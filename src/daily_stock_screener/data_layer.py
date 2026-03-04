@@ -6,6 +6,7 @@ from loguru import logger
 import datetime
 import os
 import requests
+from io import StringIO
 from cache_manager import CacheManager
 
 class DataLayer:
@@ -35,8 +36,8 @@ class DataLayer:
             url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
             headers = {'User-Agent': 'Mozilla/5.0'}
             response = requests.get(url, headers=headers)
-            table = pd.read_html(response.text)
-            df = table[0]
+            tables = pd.read_html(StringIO(response.text))
+            df = tables[0]
             df['Symbol'] = df['Symbol'].str.replace('.', '-', regex=False)
             return df[['Symbol', 'Security']].rename(columns={'Symbol': 'symbol', 'Security': 'name'})
         except Exception as e:
