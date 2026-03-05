@@ -140,7 +140,7 @@ class ScreenerApp:
 
         # 7. 生成专业级 Markdown 报告
         logger.info("正在生成选股研究报告...")
-        report = ReportGenerator(self.market)
+        report = ReportGenerator(self.market, pool=self.pool)
         report.add_header(market_status=market_status)
         report.add_competition_results(best_name, results_dict)
         report.add_top_recommendations(best_name, all_recommendations[best_name])

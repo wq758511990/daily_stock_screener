@@ -6,14 +6,15 @@ import os
 class ReportGenerator:
     """生成 Markdown 格式的选股分析报告"""
     
-    def __init__(self, market):
+    def __init__(self, market, pool='sp500'):
         self.market = market
+        self.pool = pool
         self.date_str = datetime.now().strftime("%Y-%m-%d")
-        self.filename = f"Quant_Report_{self.market}_{self.date_str}.md"
+        self.filename = f"Quant_Report_{self.market}_{self.pool}_{self.date_str}.md"
         self.content = []
 
     def add_header(self, market_status="BULL"):
-        self.content.append(f"# 📈 实盘安全版每日量化研报 ({self.market}股市场)")
+        self.content.append(f"# 📈 实盘安全版每日量化研报 ({self.market}股市场 | {self.pool.upper()})")
         self.content.append(f"**生成日期**: {self.date_str}")
         
         if market_status == "BEAR":
