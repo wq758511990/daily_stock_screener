@@ -10,16 +10,14 @@ import argparse
 import sys
 
 class ScreenerApp:
-    def __init__(self, market='A', real_trade=False):
+    def __init__(self, market='A', real_trade=False, pool='sp500'):
         self.market = market
         self.real_trade = real_trade
+        self.pool = pool
         self.data_layer = DataLayer()
         self.strategy_engine = StrategyEngine()
         
-        if self.real_trade:
-            self.pool_size = 300 if self.market == 'A' else 500
-            logger.info(f"--- 实盘模式启动: 分析 {self.pool_size} 支股票 ---")
-        else:
+        if not self.real_trade:
             self.pool_size = 50 
             logger.info(f"--- 测试模式启动: 分析前 {self.pool_size} 支股票以确保回测有效性 ---")
 
@@ -55,11 +53,18 @@ class ScreenerApp:
         if self.market == 'A':
             full_pool = self.data_layer.get_hs300_list()
         else:
-            full_pool = self.data_layer.get_sp500_list()
+            if self.pool == 'russell1000':
+                full_pool = self.data_layer.get_russell_1000_list()
+            else:
+                full_pool = self.data_layer.get_sp500_list()
         
         if full_pool.empty:
             logger.error("无法获取股票名单")
             return
+
+        if self.real_trade:
+            self.pool_size = len(full_pool)
+            logger.info(f"--- 实盘模式启动: 全量分析 {self.pool_size} 支股票 ---")
 
         # 3. 准备数据与精细校验
         test_pool = full_pool.head(self.pool_size)
@@ -155,8 +160,9 @@ class ScreenerApp:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="纯技术面量化选股与研报生成系统")
     parser.add_argument('--market', type=str, default='A', choices=['A', 'US'], help='选择分析市场: A 或 US')
-    parser.add_argument('--real-trade', action='store_true', help='实盘模式：A股分析300支，美股分析500支全量数据')
+    parser.add_argument('--pool', type=str, default='sp500', choices=['sp500', 'russell1000'], help='美股股票池选择: sp500 或 russell1000')
+    parser.add_argument('--real-trade', action='store_true', help='实盘模式：全量分析所有股票')
     args = parser.parse_args()
     
-    app = ScreenerApp(market=args.market, real_trade=args.real_trade)
+    app = ScreenerApp(market=args.market, real_trade=args.real_trade, pool=args.pool)
     app.run()

@@ -36,12 +36,29 @@ class DataLayer:
             url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
             headers = {'User-Agent': 'Mozilla/5.0'}
             response = requests.get(url, headers=headers)
-            tables = pd.read_html(StringIO(response.text))
-            df = tables[0]
+            table = pd.read_html(response.text)
+            df = table[0]
             df['Symbol'] = df['Symbol'].str.replace('.', '-', regex=False)
             return df[['Symbol', 'Security']].rename(columns={'Symbol': 'symbol', 'Security': 'name'})
         except Exception as e:
             logger.error(f"获取标普500名单失败: {e}")
+            return pd.DataFrame()
+
+    def get_russell_1000_list(self):
+        """获取罗素1000成分股列表 (大中盘股)"""
+        try:
+            url = 'https://en.wikipedia.org/wiki/Russell_1000_Index'
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            response = requests.get(url, headers=headers)
+            tables = pd.read_html(response.text)
+            for df in tables:
+                if 'Ticker' in df.columns:
+                    df['Ticker'] = df['Ticker'].astype(str).str.replace('.', '-', regex=False)
+                    return df[['Ticker', 'Company']].rename(columns={'Ticker': 'symbol', 'Company': 'name'})
+            logger.error("未能在页面中找到包含 'Ticker' 列的表格")
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"获取罗素1000名单失败: {e}")
             return pd.DataFrame()
 
     def _add_technical_indicators(self, df):
