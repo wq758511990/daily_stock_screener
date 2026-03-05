@@ -96,34 +96,32 @@ class ScreenerApp:
         # 5. 对所有策略生成评分与精选池
         all_recommendations = {}
         
-        logger.info("正在执行纯量价技术面打分引擎 (已彻底剔除未来函数)...")
+        logger.info("正在执行纯量价多因子截面打分引擎 (已全面应用百分位排名)...")
 
-        for strat_name in competitor.strategies_list:
-            rec_list = []
-            for symbol, history in data_dict.items():
-                financial = financial_dict[symbol]
-                name = test_pool[test_pool['symbol'] == symbol]['name'].iloc[0]
-                
-                # 直接获取向量化算好的最后一行作为最新状态
-                last_row = history.iloc[-1].to_dict()
-                score = self.strategy_engine.get_score(strat_name, last_row)
-                price = last_row.get('close', 0)
-                
-                rec_list.append({
-                    'symbol': symbol, 
-                    'name': name, 
-                    'score': score, 
-                    'price': price,
-                    'pe': financial.get('pe', 'N/A'),
-                    'pb': financial.get('pb', 'N/A'),
-                    'roe': financial.get('roe', 'N/A')
-                })
+        # 构建当日全市场截面 DataFrame
+        cross_section_records = []
+        for symbol, history in data_dict.items():
+            last_row = history.iloc[-1].to_dict()
+            last_row['symbol'] = symbol
+            last_row['name'] = test_pool[test_pool['symbol'] == symbol]['name'].iloc[0]
+            financial = financial_dict[symbol]
+            last_row['pe'] = financial.get('pe', 'N/A')
+            last_row['pb'] = financial.get('pb', 'N/A')
+            last_row['roe'] = financial.get('roe', 'N/A')
+            cross_section_records.append(last_row)
             
-            # 按得分排序
-            if rec_list:
-                df_rec = pd.DataFrame(rec_list).sort_values(by='score', ascending=False)
+        if cross_section_records:
+            df_cross = pd.DataFrame(cross_section_records)
+            for strat_name in competitor.strategies_list:
+                scores = self.strategy_engine.get_score(strat_name, df_cross)
+                df_cross['score'] = scores.values
+                
+                # 提取精选池并排序
+                df_rec = df_cross[['symbol', 'name', 'score', 'close', 'pe', 'pb', 'roe']].rename(columns={'close': 'price'})
+                df_rec = df_rec.sort_values(by='score', ascending=False)
                 all_recommendations[strat_name] = df_rec.to_dict('records')
-            else:
+        else:
+            for strat_name in competitor.strategies_list:
                 all_recommendations[strat_name] = []
 
         # 6. 执行策略回测竞赛
