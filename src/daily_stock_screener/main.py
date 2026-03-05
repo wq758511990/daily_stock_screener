@@ -70,15 +70,15 @@ class ScreenerApp:
         test_pool = full_pool.head(self.pool_size)
         data_dict = {}
         financial_dict = {} 
-        
         logger.info(f"正在深度抓取数据并执行向量化计算 (样本 {len(test_pool)} 支)...")
         for _, row in tqdm(test_pool.iterrows(), total=len(test_pool)):
             symbol = row['symbol']
             if self.market == 'A':
-                history = self.data_layer.get_a_stock_history(symbol, days=500)
+                # 拉取 750 天：252天预热 + 440天训练 + 60天盲测
+                history = self.data_layer.get_a_stock_history(symbol, days=750)
                 financial = self.data_layer.get_a_financial_factors(symbol)
             else:
-                history = self.data_layer.get_us_stock_history(symbol, days=500)
+                history = self.data_layer.get_us_stock_history(symbol, days=750)
                 financial = self.data_layer.get_us_financial_factors(symbol)
             
             is_valid, reason = self.data_layer.validate_data(history, financial)

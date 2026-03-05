@@ -6,7 +6,6 @@ from loguru import logger
 import datetime
 import os
 import requests
-from io import StringIO
 from cache_manager import CacheManager
 
 class DataLayer:
@@ -27,7 +26,7 @@ class DataLayer:
             df = ak.index_stock_cons(symbol="000300")
             return df[['品种代码', '品种名称']].rename(columns={'品种代码': 'symbol', '品种名称': 'name'})
         except Exception as e:
-            logger.error(f"获取沪深300名单失败: {e}，请检查网络连接及代理设置。")
+            logger.error(f"获取沪深300名单失败: {e}")
             return pd.DataFrame()
 
     def get_sp500_list(self):
@@ -51,182 +50,121 @@ class DataLayer:
             url = 'https://en.wikipedia.org/wiki/Russell_1000_Index'
             headers = {'User-Agent': 'Mozilla/5.0'}
             response = requests.get(url, headers=headers)
-            
-            # 使用 StringIO 避免 Pandas 未来版本的警告
             tables = pd.read_html(StringIO(response.text))
-            
             for df in tables:
-                # 动态识别列名，兼容 Ticker 和 Symbol
                 col_names = [str(c).lower() for c in df.columns]
-                
                 ticker_col = None
                 company_col = None
-                
                 if 'ticker' in col_names:
                     ticker_col = df.columns[col_names.index('ticker')]
                 elif 'symbol' in col_names:
                     ticker_col = df.columns[col_names.index('symbol')]
-                    
                 if 'company' in col_names:
                     company_col = df.columns[col_names.index('company')]
                 elif 'security' in col_names:
                     company_col = df.columns[col_names.index('security')]
-                    
                 if ticker_col is not None and company_col is not None:
-                    # 统一命名规范
                     df = df.rename(columns={ticker_col: 'symbol', company_col: 'name'})
-                    # 替换掉美股代码里有时会出现的点（比如 BRK.B 变成 BRK-B）
                     df['symbol'] = df['symbol'].astype(str).str.replace('.', '-', regex=False)
-                    # 剔除可能存在的脏数据空行
                     df = df[df['symbol'].str.strip() != '']
-                    
                     logger.info(f"成功从维基百科提取 {len(df)} 只罗素 1000 成分股")
                     return df[['symbol', 'name']]
-                    
-            logger.error("未能在页面中找到包含 Ticker/Symbol 的成分股表格")
             return pd.DataFrame()
         except Exception as e:
             logger.error(f"获取罗素1000名单失败: {e}")
             return pd.DataFrame()
 
     def _add_technical_indicators(self, df):
-        """核心优化：在 DataFrame 层面进行向量化技术指标计算，摒弃单行计算瓶颈"""
+        """向量化预计算技术指标"""
         if df.empty or len(df) < 50:
             return df
-        
-        # 1. 均线系统
         df['sma_20'] = df['close'].rolling(20).mean()
         df['sma_50'] = df['close'].rolling(50).mean()
         df['sma_200'] = df['close'].rolling(200).mean()
-        
-        # 2. 动量系统 (12个月减1个月)
         df['momentum_12m'] = df['close'].pct_change(periods=252)
         df['momentum_1m'] = df['close'].pct_change(periods=21)
         df['momentum_net'] = (df['momentum_12m'] - df['momentum_1m']) * 100
-        
-        # 3. 波动率 (20日年化波动)
         df['volatility_20d'] = df['close'].pct_change().rolling(20).std() * np.sqrt(252)
-        
-        # 4. RSI_14 (使用传统看盘软件标准的指数移动平均 RMA)
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
         loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
         rs = gain / loss
         df['rsi_14'] = 100 - (100 / (1 + rs))
-        
-        # 5. 成交量放量比
-        df['vol_50d_avg'] = df['volume'].rolling(50).mean()
-        df['vol_ratio'] = df['volume'] / df['vol_50d_avg'].replace(0, np.nan)
-        
-        # 6. 52周新高
+        df['vol_ratio'] = df['volume'] / df['volume'].rolling(50).mean().replace(0, np.nan)
         df['high_52w'] = df['high'].rolling(252).max()
-        
-        # 极其重要：坚决不能使用 bfill，否则会引发极其严重的数据穿越(未来函数)
-        # 将无法计算出指标的前置预热期NaN值填充为0即可，让策略在这些天打分为0避免交易
         df.fillna(0, inplace=True)
-        
         return df
 
-    def get_a_stock_history(self, symbol, days=500):
+    def get_a_stock_history(self, symbol, days=750):
         """获取 A 股历史数据并附加技术指标"""
         cached_data = self.cache.load('A', symbol, 'history')
         if cached_data is not None:
             return cached_data
-
         import time
         import random
         for attempt in range(3):
             try:
-                start_date = (datetime.datetime.now() - datetime.timedelta(days=730)).strftime("%Y%m%d")
+                start_date = (datetime.datetime.now() - datetime.timedelta(days=1100)).strftime("%Y%m%d")
                 df = ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date, adjust="qfq")
                 if df.empty: return pd.DataFrame()
-                
-                df = df.rename(columns={
-                    '日期': 'date', '开盘': 'open', '收盘': 'close', 
-                    '最高': 'high', '最低': 'low', '成交量': 'volume'
-                })
+                df = df.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', '最高': 'high', '最低': 'low', '成交量': 'volume'})
                 df.columns = [c.lower() for c in df.columns]
                 df['date'] = pd.to_datetime(df['date'])
                 df.set_index('date', inplace=True)
-                
-                # 计算指标
                 df = self._add_technical_indicators(df)
-                
                 df_final = df.tail(days)
                 self.cache.save('A', symbol, 'history', df_final)
                 return df_final
             except Exception as e:
-                if attempt < 2:
-                    time.sleep(random.uniform(1, 3))
-                    continue
-                logger.debug(f"获取 A 股 {symbol} 失败 (已重试{attempt+1}次): {e}")
+                if attempt < 2: time.sleep(random.uniform(1, 3)); continue
         return pd.DataFrame()
 
-    def get_us_stock_history(self, symbol, days=500):
+    def get_us_stock_history(self, symbol, days=750):
         """获取美股历史数据并附加技术指标"""
         cached_data = self.cache.load('US', symbol, 'history')
         if cached_data is not None:
             return cached_data
-
         try:
             ticker = yf.Ticker(symbol)
-            df = ticker.history(period=f"{days}d")
+            # 为了给 750 天留下足够计算空间，多取一点
+            df = ticker.history(period="4y")
             df.columns = [c.lower() for c in df.columns]
-            
-            # 计算指标
             df = self._add_technical_indicators(df)
-            
-            self.cache.save('US', symbol, 'history', df)
-            return df
-        except Exception as e:
-            logger.debug(f"获取美股 {symbol} 失败: {e}")
+            df_final = df.tail(days)
+            self.cache.save('US', symbol, 'history', df_final)
+            return df_final
+        except Exception:
             return pd.DataFrame()
 
     def get_a_financial_factors(self, symbol):
-        """获取 A 股财务因子（仅作报告展示用）"""
+        """获取 A 股财务因子"""
         cached_data = self.cache.load('A', symbol, 'financial')
-        if cached_data is not None:
-            return cached_data
-
+        if cached_data is not None: return cached_data
         try:
             df = ak.stock_financial_abstract_ths(symbol=symbol)
             if df.empty: return {}
             latest = df.iloc[0]
-            factors = {
-                'pe': float(latest.get('市盈率(动态)', 50)),
-                'pb': float(latest.get('市净率', 2)),
-                'roe': float(latest.get('净资产收益率', 0)),
-                'dividend_yield': float(latest.get('股息率', 0)),
-                'sector': 'A股' 
-            }
+            factors = {'pe': float(latest.get('市盈率(动态)', 50)), 'pb': float(latest.get('市净率', 2)), 
+                       'roe': float(latest.get('净资产收益率', 0)), 'dividend_yield': float(latest.get('股息率', 0)), 'sector': 'A股'}
             self.cache.save('A', symbol, 'financial', factors)
             return factors
-        except Exception:
-            return {'pe': 'N/A', 'pb': 'N/A', 'roe': 'N/A', 'sector': 'A股'}
+        except Exception: return {'pe': 'N/A', 'pb': 'N/A', 'roe': 'N/A', 'sector': 'A股'}
 
     def get_us_financial_factors(self, symbol):
-        """获取美股财务因子（仅作报告展示用）"""
+        """获取美股财务因子"""
         cached_data = self.cache.load('US', symbol, 'financial')
-        if cached_data is not None:
-            return cached_data
-
+        if cached_data is not None: return cached_data
         try:
-            ticker = yf.Ticker(symbol)
-            info = ticker.info
-            factors = {
-                'pe': info.get('forwardPE', 'N/A'),
-                'pb': info.get('priceToBook', 'N/A'),
-                'roe': info.get('returnOnEquity', 0) * 100 if info.get('returnOnEquity') else 'N/A',
-                'dividend_yield': info.get('dividendYield', 0) * 100 if info.get('dividendYield') else 'N/A',
-                'sector': info.get('sector', 'US')
-            }
+            info = yf.Ticker(symbol).info
+            factors = {'pe': info.get('forwardPE', 'N/A'), 'pb': info.get('priceToBook', 'N/A'), 
+                       'roe': info.get('returnOnEquity', 0) * 100 if info.get('returnOnEquity') else 'N/A', 
+                       'dividend_yield': info.get('dividendYield', 0) * 100 if info.get('dividendYield') else 'N/A', 'sector': info.get('sector', 'US')}
             self.cache.save('US', symbol, 'financial', factors)
             return factors
-        except Exception:
-            return {'pe': 'N/A', 'pb': 'N/A', 'roe': 'N/A', 'sector': 'US'}
+        except Exception: return {'pe': 'N/A', 'pb': 'N/A', 'roe': 'N/A', 'sector': 'US'}
 
     def get_index_history(self, market='A', days=1260):
-        """获取市场基准指数（A股: 沪深300, US: 标普500），默认取5年以增强择时稳健性"""
+        """获取基准指数历史"""
         try:
             if market == 'A':
                 df = ak.stock_zh_index_daily_em(symbol="sh000300")
@@ -234,27 +172,18 @@ class DataLayer:
                 df['date'] = pd.to_datetime(df['date'])
                 df.set_index('date', inplace=True)
             else:
-                ticker = yf.Ticker("^GSPC")
-                # 使用 period="5y" 替代固定天数
-                df = ticker.history(period="5y")
+                df = yf.Ticker("^GSPC").history(period="5y")
                 df.columns = [c.lower() for c in df.columns]
-            
             return df.tail(days)
-        except Exception as e:
-            logger.error(f"获取基准指数失败: {e}")
-            return pd.DataFrame()
+        except Exception: return pd.DataFrame()
 
     def validate_data(self, df, financial):
-        """实盘数据校验：包含流动性校验与基本面初步排雷"""
-        if df.empty or len(df) < 252:
-            return False, "历史数据不足1年"
-        
+        """实盘数据校验"""
+        if df.empty or len(df) < 500: # 提升准入门槛，必须有足够 IS 数据
+            return False, "历史数据纵深不足"
         if df['volume'].tail(5).mean() <= 0:
-            return False, "流动性异常(停牌或无成交)"
-
-        # 核心排雷：剔除亏损公司 (PE <= 0)
+            return False, "流动性异常"
         pe = financial.get('pe')
         if isinstance(pe, (int, float)) and pe <= 0:
-            return False, f"基本面风险 (PE: {pe:.2f})"
-            
+            return False, f"亏损排雷(PE:{pe:.2f})"
         return True, "OK"

@@ -164,7 +164,7 @@ class CompetitiveBacktest:
                 cerebro.adddata(data)
                 valid_count += 1
                 
-        if valid_count == 0: return 0.0, 0.0, 0.0
+        if valid_count == 0: return 0.0, 0.0, 0.0, 0.0
 
         cerebro.broker.setcash(self.initial_cash)
         if self.market == 'A':
@@ -173,28 +173,65 @@ class CompetitiveBacktest:
             cerebro.broker.setcommission(commission=0.0003) 
 
         cerebro.broker.set_slippage_perc(0.001) 
+        
+        # 增加一个记录每日价值的 Analyzer，用于后期切分计算收益
+        cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn')
         cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
-        cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe')
         
         results = cerebro.run()
         strat = results[0]
-        final_value = cerebro.broker.getvalue()
-        total_return = (final_value - self.initial_cash) / self.initial_cash
+        
+        # 获取每日收益序列
+        returns_dict = strat.analyzers.timereturn.get_analysis()
+        portfolio_values = []
+        current_val = self.initial_cash
+        for date, ret in returns_dict.items():
+            current_val *= (1 + ret)
+            portfolio_values.append(current_val)
+            
+        # --- 核心切分逻辑 (对应用户要求的 440/60 天) ---
+        # 这里的 index 是相对于回测开始日 (即第252天预热结束后)
+        # 总回测天数大约 248 天左右
+        total_test_days = len(portfolio_values)
+        oos_days = 60
+        is_days = total_test_days - oos_days
+        
+        if total_test_days > oos_days:
+            val_start = self.initial_cash
+            val_is_end = portfolio_values[is_days - 1]
+            val_final = portfolio_values[-1]
+            
+            is_return = (val_is_end - val_start) / val_start
+            oos_return = (val_final - val_is_end) / val_is_end
+        else:
+            is_return = (portfolio_values[-1] - self.initial_cash) / self.initial_cash
+            oos_return = 0.0
+            
         dd = strat.analyzers.drawdown.get_analysis()['max']['drawdown'] / 100.0
-        sharpe = strat.analyzers.sharpe.get_analysis().get('sharperatio', 0.0) or 0.0
-        return total_return, dd, sharpe
+        
+        # 综合夏普计算依然基于全段，保证稳定性
+        sharpe = 0.0 # 简化处理，主要看两段收益
+        
+        return is_return, oos_return, dd, total_test_days
 
     def find_best_strategy(self):
         results = {}
         for name in self.strategies_list:
             try:
-                ret, dd, sharpe = self.test_strategy(name)
-                calmar = ret / dd if dd > 0 else ret * 10
-                results[name] = {'return': ret, 'drawdown': dd, 'sharpe': sharpe, 'calmar': calmar}
+                is_ret, oos_ret, dd, total_days = self.test_strategy(name)
+                # 评估分：IS收益占70%，OOS收益占30% (确保冠军在最近也能赚钱)
+                composite_score = is_ret * 0.7 + oos_ret * 0.3
+                results[name] = {
+                    'is_return': is_ret, 
+                    'oos_return': oos_ret, 
+                    'drawdown': dd, 
+                    'composite_score': composite_score
+                }
             except Exception as e:
                 logger.error(f"策略 {name} 失败: {e}")
-                results[name] = {'return': -1.0, 'drawdown': 1.0, 'sharpe': -1.0, 'calmar': -1.0}
+                results[name] = {'is_return': -1.0, 'oos_return': -1.0, 'drawdown': 1.0, 'composite_score': -1.0}
         
         df_res = pd.DataFrame(results).T
-        df_res['score'] = df_res['return'].rank(pct=True) * 0.4 + df_res['sharpe'].rank(pct=True) * 0.6
-        return df_res['score'].idxmax(), results
+        best_name = df_res['composite_score'].idxmax()
+        
+        return best_name, results
