@@ -45,17 +45,45 @@ class DataLayer:
             return pd.DataFrame()
 
     def get_russell_1000_list(self):
-        """获取罗素1000成分股列表 (大中盘股)"""
+        """获取罗素1000成分股列表 (大中盘股)，极其健壮的解析器"""
         try:
+            from io import StringIO
             url = 'https://en.wikipedia.org/wiki/Russell_1000_Index'
             headers = {'User-Agent': 'Mozilla/5.0'}
             response = requests.get(url, headers=headers)
-            tables = pd.read_html(response.text)
+            
+            # 使用 StringIO 避免 Pandas 未来版本的警告
+            tables = pd.read_html(StringIO(response.text))
+            
             for df in tables:
-                if 'Ticker' in df.columns:
-                    df['Ticker'] = df['Ticker'].astype(str).str.replace('.', '-', regex=False)
-                    return df[['Ticker', 'Company']].rename(columns={'Ticker': 'symbol', 'Company': 'name'})
-            logger.error("未能在页面中找到包含 'Ticker' 列的表格")
+                # 动态识别列名，兼容 Ticker 和 Symbol
+                col_names = [str(c).lower() for c in df.columns]
+                
+                ticker_col = None
+                company_col = None
+                
+                if 'ticker' in col_names:
+                    ticker_col = df.columns[col_names.index('ticker')]
+                elif 'symbol' in col_names:
+                    ticker_col = df.columns[col_names.index('symbol')]
+                    
+                if 'company' in col_names:
+                    company_col = df.columns[col_names.index('company')]
+                elif 'security' in col_names:
+                    company_col = df.columns[col_names.index('security')]
+                    
+                if ticker_col is not None and company_col is not None:
+                    # 统一命名规范
+                    df = df.rename(columns={ticker_col: 'symbol', company_col: 'name'})
+                    # 替换掉美股代码里有时会出现的点（比如 BRK.B 变成 BRK-B）
+                    df['symbol'] = df['symbol'].astype(str).str.replace('.', '-', regex=False)
+                    # 剔除可能存在的脏数据空行
+                    df = df[df['symbol'].str.strip() != '']
+                    
+                    logger.info(f"成功从维基百科提取 {len(df)} 只罗素 1000 成分股")
+                    return df[['symbol', 'name']]
+                    
+            logger.error("未能在页面中找到包含 Ticker/Symbol 的成分股表格")
             return pd.DataFrame()
         except Exception as e:
             logger.error(f"获取罗素1000名单失败: {e}")
